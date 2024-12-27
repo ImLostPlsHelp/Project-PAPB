@@ -4,12 +4,10 @@ import android.content.Context
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
-import android.widget.Space
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
@@ -20,10 +18,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import com.example.travelupa.ui.theme.TravelupaTheme
 import androidx.compose.foundation.layout.*
-import androidx.compose.material.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.unit.dp
-import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -32,8 +28,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -50,11 +47,10 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import coil.request.ImageRequest
 import coil.compose.rememberAsyncImagePainter
-import com.google.firebase.Firebase
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.storage.FirebaseStorage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
@@ -66,13 +62,14 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         FirebaseApp.initializeApp(this)
+        val currentUser: FirebaseUser? = FirebaseAuth.getInstance().currentUser
         setContent {
             TravelupaTheme {
                 Surface (
                     modifier = Modifier.fillMaxSize(),
                     color = Color.White
                 ) {
-                    AppNavigation()
+                    AppNavigation(currentUser)
                 }
             }
         }
@@ -86,15 +83,19 @@ sealed class Screen(val route: String) {
 }
 
 @Composable
-fun AppNavigation() {
+fun AppNavigation(currentUser: FirebaseUser?) {
     val navController = rememberNavController()
 
     NavHost(
         navController = navController,
-        startDestination = Screen.Login.route
+        startDestination = if (currentUser != null) {
+            Screen.RekomendasiTempat.route
+        } else {
+            Screen.Login.route
+        }
     ) {
-        // Login Screen
-        composable(route = Screen.Login.route) {
+        // Tambahkan navigasi ke semua screen
+        composable(Screen.Login.route) {
             LoginScreen(
                 onLoginSuccess = {
                     navController.navigate(Screen.RekomendasiTempat.route) {
@@ -107,21 +108,27 @@ fun AppNavigation() {
             )
         }
 
-        // Register Screen
-        composable(route = Screen.Register.route) {
+        composable(Screen.Register.route) {
             RegisterScreen(
                 onRegisterSuccess = {
-                    navController.popBackStack()
+                    navController.popBackStack() // Kembali ke halaman login setelah registrasi
                 }
             )
         }
 
-        // Rekomendasi Tempat Screen
-        composable(route = Screen.RekomendasiTempat.route) {
-            RekomendasiTempatScreen()
+        composable(Screen.RekomendasiTempat.route) {
+            RekomendasiTempatScreen(
+                onBackToLogin = {
+                    FirebaseAuth.getInstance().signOut()
+                    navController.navigate(Screen.Login.route) {
+                        popUpTo(Screen.RekomendasiTempat.route) { inclusive = true }
+                    }
+                }
+            )
         }
     }
 }
+
 
 @Composable
 fun LoginScreen (
@@ -363,55 +370,131 @@ val daftarTempatWisata = listOf(
         gambarResId = R.drawable.bromo)
     )
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun RekomendasiTempatScreen() {
-    var daftarTempatWisata by remember { mutableStateOf(listOf(
-        TempatWisata("Tumpak Sewu",
-        "Air terjun tercantik di Jawa Timur.", gambarResId = R.drawable.tumpak_sewu)))}
-
+fun RekomendasiTempatScreen(onBackToLogin: () -> Unit) {
+    val firestore = FirebaseFirestore.getInstance()
+    val userEmail = FirebaseAuth.getInstance().currentUser?.email
+    var daftarTempatWisata by remember { mutableStateOf<List<TempatWisata>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(true) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
     var showTambahDialog by remember { mutableStateOf(false) }
 
-    Scaffold (
+    // Load data from Firestore
+    LaunchedEffect(Unit) {
+        firestore.collection("tempat_wisata")
+            .addSnapshotListener { snapshot, exception ->
+                if (exception != null) {
+                    errorMessage = "Gagal memuat data: ${exception.localizedMessage}"
+                    isLoading = false
+                    return@addSnapshotListener
+                }
+                if (snapshot != null && !snapshot.isEmpty) {
+                    daftarTempatWisata = snapshot.documents.mapNotNull { doc ->
+                        val nama = doc.getString("nama")
+                        val deskripsi = doc.getString("deskripsi")
+                        val gambarUri = doc.getString("gambarUri")
+                        if (nama != null && deskripsi != null) {
+                            TempatWisata(nama, deskripsi, gambarUri)
+                        } else null
+                    }
+                }
+                isLoading = false
+            }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Rekomendasi Tempat Wisata") },
+                actions = {
+                    IconButton(onClick = {
+                        FirebaseAuth.getInstance().signOut() // Logout dari Firebase
+                        onBackToLogin() // Navigasi kembali ke halaman login
+                    }) {
+                        Icon(Icons.Filled.Lock, contentDescription = "Logout")
+                    }
+                }
+            )
+        },
         floatingActionButton = {
-            FloatingActionButton(onClick = { showTambahDialog = true },
-                containerColor = MaterialTheme.colorScheme.primary) {
+            FloatingActionButton(
+                onClick = { showTambahDialog = true },
+                containerColor = MaterialTheme.colorScheme.primary
+            ) {
                 Icon(Icons.Filled.Add, contentDescription = "Tambah Tempat Wisata")
             }
         }
     ) { paddingValues ->
-        Column (
+        Column(
             modifier = Modifier
                 .padding(paddingValues)
                 .padding(16.dp)
         ) {
-            LazyColumn {
-                items(daftarTempatWisata) { tempat ->
-                    TempatItemEditable(
-                        tempat = tempat,
-                        onDelete = {
-                            daftarTempatWisata = daftarTempatWisata.filter {it != tempat }
-                        }
-                    )
+            // Tampilkan email pengguna
+            userEmail?.let {
+                Text(
+                    text = "Logged in as: $it",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(bottom = 16.dp)
+                )
+            }
+
+            if (isLoading) {
+                CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
+            } else if (!errorMessage.isNullOrEmpty()) {
+                Text(
+                    text = errorMessage ?: "",
+                    color = Color.Red,
+                    modifier = Modifier.align(Alignment.CenterHorizontally)
+                )
+            } else {
+                LazyColumn {
+                    items(daftarTempatWisata) { tempat ->
+                        TempatItemEditable(
+                            tempat = tempat,
+                            onDelete = {
+                                firestore.collection("tempat_wisata").document(tempat.nama)
+                                    .delete()
+                                    .addOnSuccessListener {
+                                        daftarTempatWisata = daftarTempatWisata.filter { it != tempat }
+                                    }
+                                    .addOnFailureListener {
+                                        errorMessage = "Gagal menghapus data: ${it.localizedMessage}"
+                                    }
+                            }
+                        )
+                    }
                 }
             }
         }
 
         if (showTambahDialog) {
             TambahTempatWisataDialog(
-                firestore = FirebaseFirestore.getInstance(), // Menambahkan instance Firestore
-                context = LocalContext.current, // Menambahkan context dari Compose
+                firestore = firestore,
+                context = LocalContext.current,
                 onDismiss = { showTambahDialog = false },
                 onTambah = { nama, deskripsi, gambarUri ->
-                    val uriString = gambarUri?.toString() ?: ""
-                    val nuevoTempat = TempatWisata(nama, deskripsi, uriString)
-                    daftarTempatWisata = daftarTempatWisata + nuevoTempat
-                    showTambahDialog = false
+                    val data = mapOf(
+                        "nama" to nama,
+                        "deskripsi" to deskripsi,
+                        "gambarUri" to gambarUri.toString()
+                    )
+                    firestore.collection("tempat_wisata").document(nama)
+                        .set(data)
+                        .addOnSuccessListener {
+                            showTambahDialog = false
+                        }
+                        .addOnFailureListener {
+                            errorMessage = "Gagal menambahkan data: ${it.localizedMessage}"
+                        }
                 }
             )
         }
-
     }
 }
+
+
 
 @Composable
 fun TambahTempatWisataDialog(
