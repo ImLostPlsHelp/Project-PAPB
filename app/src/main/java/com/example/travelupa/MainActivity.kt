@@ -45,13 +45,18 @@ import androidx.compose.ui.unit.DpOffset
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.room.Room
 import coil.request.ImageRequest
 import coil.compose.rememberAsyncImagePainter
+import com.example.travelupa.database.AppDatabase
+import com.example.travelupa.ui.theme.ImageEntity
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.firestore.FirebaseFirestore
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
@@ -579,7 +584,7 @@ fun TambahTempatWisataDialog(
                                     context, // Tambahkan context di sini
                                     nama,
                                     deskripsi,
-                                    localPath,
+                                    localPath, // Kirim path lokal (String)
                                     onSuccess = {
                                         isUploading = false
                                         onTambah(nama, deskripsi, localPath)
@@ -593,6 +598,9 @@ fun TambahTempatWisataDialog(
                                 isUploading = false
                                 Toast.makeText(context, "Gagal menyimpan gambar secara lokal", Toast.LENGTH_SHORT).show()
                             }
+                        } ?: run {
+                            isUploading = false
+                            Toast.makeText(context, "Gambar belum dipilih", Toast.LENGTH_SHORT).show()
                         }
                     }
                 },
@@ -622,45 +630,74 @@ fun TambahTempatWisataDialog(
 
 fun saveDataToFirestore(
     firestore: FirebaseFirestore,
-    context: Context, // Tambahkan parameter context
+    context: Context,
     nama: String,
     deskripsi: String,
     localImagePath: String,
-    onSuccess: () -> Unit,
-    onFailure: () -> Unit
+    onSuccess: (TempatWisata) -> Unit,
+    onFailure: (Exception) -> Unit
 ) {
-    val tempatWisataData = mapOf(
-        "nama" to nama,
-        "deskripsi" to deskripsi,
-        "localImagePath" to localImagePath
-    )
+    val db = Room.databaseBuilder(
+        context,
+        AppDatabase::class.java, "travelupa-database"
+    ).build()
+    val imageDao = db.imageDao()
 
-    firestore.collection("tempat_wisata")
-        .add(tempatWisataData)
-        .addOnSuccessListener {
-            Toast.makeText(context, "Data berhasil disimpan!", Toast.LENGTH_SHORT).show() // Gunakan context
-            onSuccess()
+    CoroutineScope(Dispatchers.IO).launch {
+        try {
+            // Simpan path gambar ke Room Database
+            imageDao.insert(ImageEntity(localPath = localImagePath))
+
+            // Buat objek TempatWisata
+            val tempatWisata = TempatWisata(
+                nama = nama,
+                deskripsi = deskripsi,
+                gambarUriString = localImagePath
+            )
+
+            // Simpan data ke Firestore
+            firestore.collection("tempat_wisata")
+                .add(tempatWisata)
+                .addOnCompleteListener { task ->
+                    CoroutineScope(Dispatchers.Main).launch {
+                        if (task.isSuccessful) {
+                            Toast.makeText(context, "Data berhasil disimpan!", Toast.LENGTH_SHORT).show()
+                            // Callback hanya untuk memberi tahu bahwa data sudah berhasil disimpan
+                            onSuccess(tempatWisata) // Tidak menambahkan ulang data
+                        } else {
+                            val exception = task.exception ?: Exception("Gagal menyimpan data ke Firestore.")
+                            Toast.makeText(context, "Gagal menyimpan data: ${exception.message}", Toast.LENGTH_SHORT).show()
+                            onFailure(exception)
+                        }
+                    }
+                }
+        } catch (e: Exception) {
+            withContext(Dispatchers.Main) {
+                Toast.makeText(context, "Terjadi kesalahan: ${e.message}", Toast.LENGTH_SHORT).show()
+                onFailure(e)
+            }
+        } finally {
+            db.close()
         }
-        .addOnFailureListener { e ->
-            Toast.makeText(context, "Gagal menyimpan data: ${e.message}", Toast.LENGTH_SHORT).show() // Gunakan context
-            onFailure()
-        }
+    }
 }
 
 fun saveImageLocally(context: Context, imageUri: Uri): String? {
     return try {
         val inputStream = context.contentResolver.openInputStream(imageUri)
-        val file = File(context.filesDir, "${UUID.randomUUID()}.jpg")
-        val outputStream = file.outputStream()
-        inputStream?.copyTo(outputStream)
-        inputStream?.close()
-        outputStream.close()
-        file.absolutePath // Mengembalikan path file yang disimpan
+        val file = File(context.filesDir, "image_${System.currentTimeMillis()}.jpg")
+        inputStream?.use { input ->
+            file.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        }
+        file.absolutePath // Kembalikan path gambar yang disimpan
     } catch (e: Exception) {
         e.printStackTrace()
         null
     }
 }
+
 
 
 
