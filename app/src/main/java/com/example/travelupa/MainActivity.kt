@@ -80,6 +80,7 @@ sealed class Screen(val route: String) {
     object Login : Screen("login")
     object Register : Screen("register") // Tambahkan route untuk registrasi
     object RekomendasiTempat : Screen("rekomendasi_tempat")
+    object Greeting : Screen("greeting")
 }
 
 @Composable
@@ -91,9 +92,19 @@ fun AppNavigation(currentUser: FirebaseUser?) {
         startDestination = if (currentUser != null) {
             Screen.RekomendasiTempat.route
         } else {
-            Screen.Login.route
+            Screen.Greeting.route
         }
     ) {
+
+        composable(Screen.Greeting.route) {
+            GreetingScreen(
+                onStart = {
+                    navController.navigate(Screen.Login.route) {
+                        popUpTo(Screen.Greeting.route) { inclusive = true }
+                    }
+                }
+            )
+        }
         // Tambahkan navigasi ke semua screen
         composable(Screen.Login.route) {
             LoginScreen(
@@ -315,7 +326,7 @@ fun RegisterScreen (
 }
 
 @Composable
-fun Greeting() {
+fun GreetingScreen(onStart: () -> Unit) {
     Box(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
@@ -341,7 +352,7 @@ fun Greeting() {
             }
 
         Button(
-            onClick = { /*TODO*/ },
+            onClick = onStart,
             modifier = Modifier
                 .width(360.dp)
                 .align(Alignment.BottomCenter)
@@ -824,6 +835,8 @@ fun TempatItem(tempat: TempatWisata) {
 @Composable
 fun GreetingPreview() {
     TravelupaTheme {
-        Greeting()
+        GreetingScreen (
+            onStart = {}
+        )
     }
 }
