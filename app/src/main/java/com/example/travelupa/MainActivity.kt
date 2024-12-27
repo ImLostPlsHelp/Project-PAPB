@@ -81,6 +81,7 @@ class MainActivity : ComponentActivity() {
 
 sealed class Screen(val route: String) {
     object Login : Screen("login")
+    object Register : Screen("register") // Tambahkan route untuk registrasi
     object RekomendasiTempat : Screen("rekomendasi_tempat")
 }
 
@@ -99,6 +100,18 @@ fun AppNavigation() {
                     navController.navigate(Screen.RekomendasiTempat.route) {
                         popUpTo(Screen.Login.route) { inclusive = true }
                     }
+                },
+                onNavigateToRegister = {
+                    navController.navigate(Screen.Register.route)
+                }
+            )
+        }
+
+        // Register Screen
+        composable(route = Screen.Register.route) {
+            RegisterScreen(
+                onRegisterSuccess = {
+                    navController.popBackStack()
                 }
             )
         }
@@ -110,10 +123,10 @@ fun AppNavigation() {
     }
 }
 
-
 @Composable
 fun LoginScreen (
-    onLoginSuccess: () -> Unit
+    onLoginSuccess: () -> Unit,
+    onNavigateToRegister: () -> Unit // Tambahkan parameter navigasi ke registrasi
 ) {
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
@@ -185,6 +198,102 @@ fun LoginScreen (
                 )
             } else {
                 Text("Login")
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        TextButton(
+            onClick = onNavigateToRegister, // Navigasi ke halaman registrasi
+            modifier = Modifier.align(Alignment.CenterHorizontally)
+        ) {
+            Text("Belum punya akun? Daftar di sini")
+        }
+
+        errorMessage?.let {
+            Text(
+                text = it,
+                color = Color.Red,
+                modifier = Modifier.padding(top = 8.dp)
+            )
+        }
+    }
+}
+
+@Composable
+fun RegisterScreen (
+    onRegisterSuccess: () -> Unit // Tambahkan parameter untuk kembali ke login setelah registrasi
+) {
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    var isLoading by remember { mutableStateOf(false) }
+
+    val coroutineScope = rememberCoroutineScope()
+
+    Column (
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.Center
+    ) {
+        OutlinedTextField (
+            value = email,
+            onValueChange = {
+                email = it
+                errorMessage = null
+            },
+            label = { Text("Email") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        OutlinedTextField (
+            value = password,
+            onValueChange = {
+                password = it
+                errorMessage = null
+            },
+            label = { Text("Password") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Button(onClick = {
+            if (email.isBlank() || password.isBlank()) {
+                errorMessage = "Please enter email and password"
+                return@Button
+            }
+            isLoading = true
+            errorMessage = null
+            coroutineScope.launch {
+                try {
+                    //Firebase Authentication
+                    val authResult = withContext(Dispatchers.IO) {
+                        FirebaseAuth.getInstance().createUserWithEmailAndPassword(email, password).await()
+                    }
+                    isLoading = false
+                    onRegisterSuccess()
+                } catch (e: Exception) {
+                    isLoading = false
+                    errorMessage = "Registration failed: ${e.localizedMessage}"
+                }
+            }
+        },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !isLoading
+        ) {
+            if (isLoading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    color = Color.White
+                )
+            } else {
+                Text("Register")
             }
         }
 
