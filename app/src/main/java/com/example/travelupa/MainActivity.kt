@@ -1,8 +1,11 @@
 package com.example.travelupa
 
+import android.content.Context
 import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import android.widget.Space
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -30,6 +33,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -40,6 +44,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.DpOffset
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -48,10 +53,14 @@ import coil.compose.rememberAsyncImagePainter
 import com.google.firebase.Firebase
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.storage.FirebaseStorage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.util.UUID
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -228,8 +237,8 @@ fun Greeting() {
 }
 
 data class TempatWisata(
-    val nama: String,
-    val deskripsi: String,
+    val nama: String = "",
+    val deskripsi: String = "",
     val gambarUriString: String? = null,
     val gambarResId: Int? = null
 )
@@ -278,10 +287,12 @@ fun RekomendasiTempatScreen() {
             }
         }
 
-        if(showTambahDialog) {
-            TambahTempatWisataDialog (
-                onDismiss = { showTambahDialog = false},
-                onTambah = {nama, deskripsi, gambarUri ->
+        if (showTambahDialog) {
+            TambahTempatWisataDialog(
+                firestore = FirebaseFirestore.getInstance(), // Menambahkan instance Firestore
+                context = LocalContext.current, // Menambahkan context dari Compose
+                onDismiss = { showTambahDialog = false },
+                onTambah = { nama, deskripsi, gambarUri ->
                     val uriString = gambarUri?.toString() ?: ""
                     val nuevoTempat = TempatWisata(nama, deskripsi, uriString)
                     daftarTempatWisata = daftarTempatWisata + nuevoTempat
@@ -289,23 +300,26 @@ fun RekomendasiTempatScreen() {
                 }
             )
         }
+
     }
 }
 
 @Composable
-fun TambahTempatWisataDialog (
+fun TambahTempatWisataDialog(
+    firestore: FirebaseFirestore,
+    context: Context,
     onDismiss: () -> Unit,
     onTambah: (String, String, String?) -> Unit
 ) {
     var nama by remember { mutableStateOf("") }
     var deskripsi by remember { mutableStateOf("") }
     var gambarUri by remember { mutableStateOf<Uri?>(null) }
+    var isUploading by remember { mutableStateOf(false) }
 
     val gambarLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent())
-    {
-        uri: Uri? ->
-        gambarUri
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        gambarUri = uri
     }
 
     AlertDialog(
@@ -316,19 +330,21 @@ fun TambahTempatWisataDialog (
                 TextField(
                     value = nama,
                     onValueChange = { nama = it },
-                    label = {Text("Nama Tempat")},
-                    modifier = Modifier.fillMaxWidth()
+                    label = { Text("Nama Tempat") },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isUploading
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 TextField(
                     value = deskripsi,
                     onValueChange = { deskripsi = it },
                     label = { Text("Deskripsi") },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isUploading
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 gambarUri?.let { uri ->
-                    Image (
+                    Image(
                         painter = rememberAsyncImagePainter(model = uri),
                         contentDescription = "Gambar yang dipilih",
                         modifier = Modifier
@@ -340,31 +356,110 @@ fun TambahTempatWisataDialog (
                 Spacer(modifier = Modifier.height(8.dp))
                 Button(
                     onClick = { gambarLauncher.launch("image/*") },
-                    modifier = Modifier.fillMaxWidth()
-                    ) {
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isUploading
+                ) {
                     Text("Pilih Gambar")
                 }
             }
         },
         confirmButton = {
-            Button(onClick = {
-            if (nama.isNotBlank() && deskripsi.isNotBlank()) {
-                onTambah(nama, deskripsi, gambarUri?.toString())
-            }
-            }) {
-                Text("Tambah")
+            Button(
+                onClick = {
+                    if (nama.isNotBlank() && deskripsi.isNotBlank()) {
+                        isUploading = true
+                        gambarUri?.let { uri ->
+                            val localPath = saveImageLocally(context, uri)
+                            if (localPath != null) {
+                                saveDataToFirestore(
+                                    firestore,
+                                    context, // Tambahkan context di sini
+                                    nama,
+                                    deskripsi,
+                                    localPath,
+                                    onSuccess = {
+                                        isUploading = false
+                                        onTambah(nama, deskripsi, localPath)
+                                        onDismiss()
+                                    },
+                                    onFailure = {
+                                        isUploading = false
+                                    }
+                                )
+                            } else {
+                                isUploading = false
+                                Toast.makeText(context, "Gagal menyimpan gambar secara lokal", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                },
+                enabled = !isUploading
+            ) {
+                if (isUploading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        color = Color.White
+                    )
+                } else {
+                    Text("Tambah")
+                }
             }
         },
         dismissButton = {
-            Button (
+            Button(
                 onClick = onDismiss,
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surface)
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surface),
+                enabled = !isUploading
             ) {
                 Text("Batal")
             }
         }
     )
 }
+
+fun saveDataToFirestore(
+    firestore: FirebaseFirestore,
+    context: Context, // Tambahkan parameter context
+    nama: String,
+    deskripsi: String,
+    localImagePath: String,
+    onSuccess: () -> Unit,
+    onFailure: () -> Unit
+) {
+    val tempatWisataData = mapOf(
+        "nama" to nama,
+        "deskripsi" to deskripsi,
+        "localImagePath" to localImagePath
+    )
+
+    firestore.collection("tempat_wisata")
+        .add(tempatWisataData)
+        .addOnSuccessListener {
+            Toast.makeText(context, "Data berhasil disimpan!", Toast.LENGTH_SHORT).show() // Gunakan context
+            onSuccess()
+        }
+        .addOnFailureListener { e ->
+            Toast.makeText(context, "Gagal menyimpan data: ${e.message}", Toast.LENGTH_SHORT).show() // Gunakan context
+            onFailure()
+        }
+}
+
+fun saveImageLocally(context: Context, imageUri: Uri): String? {
+    return try {
+        val inputStream = context.contentResolver.openInputStream(imageUri)
+        val file = File(context.filesDir, "${UUID.randomUUID()}.jpg")
+        val outputStream = file.outputStream()
+        inputStream?.copyTo(outputStream)
+        inputStream?.close()
+        outputStream.close()
+        file.absolutePath // Mengembalikan path file yang disimpan
+    } catch (e: Exception) {
+        e.printStackTrace()
+        null
+    }
+}
+
+
 
 @Composable
 fun GambarPicker(
@@ -402,10 +497,13 @@ fun GambarPicker(
 }
 
 @Composable
-fun TempatItemEditable (
+fun TempatItemEditable(
     tempat: TempatWisata,
     onDelete: () -> Unit
 ) {
+    val firestore = FirebaseFirestore.getInstance()
+    var expanded by remember { mutableStateOf(false) }
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -413,18 +511,19 @@ fun TempatItemEditable (
             .background(MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(4.dp)
     ) {
-        Column (modifier = Modifier.padding(16.dp)) {
-            Row (
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column (modifier = Modifier.fillMaxWidth(1f)) {
+                Column(modifier = Modifier.fillMaxWidth(1f)) {
                     Image(
                         painter = tempat.gambarUriString?.let { uriString ->
-                            rememberAsyncImagePainter(ImageRequest.Builder(LocalContext.current)
-                                .data(Uri.parse(uriString))
-                                .build()
+                            rememberAsyncImagePainter(
+                                ImageRequest.Builder(LocalContext.current)
+                                    .data(Uri.parse(uriString))
+                                    .build()
                             )
                         } ?: tempat.gambarResId?.let {
                             painterResource(id = it)
@@ -435,28 +534,59 @@ fun TempatItemEditable (
                             .height(200.dp),
                         contentScale = ContentScale.Crop
                     )
-                    Text(
-                        text = tempat.nama,
-                        style = MaterialTheme.typography.headlineSmall,
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
-                    Text(
-                        text = tempat.deskripsi,
-                        style = MaterialTheme.typography.bodyLarge,
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
-                    IconButton(onClick = onDelete) {
-                        Icon(
-                            Icons.Filled.Delete,
-                            contentDescription = "Hapus Tempat Wisata",
-                            tint = MaterialTheme.colorScheme.error
-                        )
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier
+                                .align(Alignment.CenterStart)
+                        ) {
+                            Text(
+                                text = tempat.nama,
+                                style = MaterialTheme.typography.headlineSmall,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+                            Text(
+                                text = tempat.deskripsi,
+                                style = MaterialTheme.typography.bodyLarge,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+                        }
+                        IconButton(
+                            onClick = { expanded = true },
+                            modifier = Modifier.align(Alignment.TopEnd)
+                        ) {
+                            Icon(
+                                Icons.Default.MoreVert,
+                                contentDescription = "More options",
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = expanded,
+                            onDismissRequest = { expanded = false },
+                            offset = DpOffset(250.dp, 0.dp)
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Delete") },
+                                onClick = {
+                                    expanded = false
+                                    firestore.collection("tempat_wisata")
+                                        .document(tempat.nama)
+                                        .delete()
+                                        .addOnSuccessListener {
+                                            onDelete()
+                                        }
+                                        .addOnFailureListener { e ->
+                                            Log.w("TempatItemEditable", "Error deleting document", e)
+                                        }
+                                }
+                            )
+                        }
                     }
                 }
             }
         }
     }
 }
+
 
 @Composable
 fun TempatItem(tempat: TempatWisata) {
