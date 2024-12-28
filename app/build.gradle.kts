@@ -91,5 +91,6 @@ dependencies {
     implementation ("androidx.lifecycle:lifecycle-viewmodel-ktx:2.6.0")
     implementation ("androidx.lifecycle:lifecycle-livedata-ktx:2.6.0")
     implementation ("androidx.room:room-ktx:2.5.2")
+    implementation(kotlin("script-runtime"))
 
 }

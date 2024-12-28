@@ -1,6 +1,7 @@
 package com.example.travelupa
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
@@ -21,16 +22,22 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.unit.dp
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,6 +56,7 @@ import androidx.room.Room
 import coil.request.ImageRequest
 import coil.compose.rememberAsyncImagePainter
 import com.example.travelupa.database.AppDatabase
+import com.example.travelupa.database.ImageDao
 import com.example.travelupa.ui.theme.ImageEntity
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
@@ -56,17 +64,23 @@ import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
 import java.util.UUID
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         FirebaseApp.initializeApp(this)
+        val database = Room.databaseBuilder(
+            applicationContext,
+            AppDatabase::class.java,
+            "app_database"
+        ).build()
+        val imageDao = database.imageDao()
         val currentUser: FirebaseUser? = FirebaseAuth.getInstance().currentUser
         setContent {
             TravelupaTheme {
@@ -74,7 +88,7 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = Color.White
                 ) {
-                    AppNavigation(currentUser)
+                    AppNavigation(currentUser, imageDao)
                 }
             }
         }
@@ -86,10 +100,14 @@ sealed class Screen(val route: String) {
     object Register : Screen("register") // Tambahkan route untuk registrasi
     object RekomendasiTempat : Screen("rekomendasi_tempat")
     object Greeting : Screen("greeting")
+    object Gallery : Screen("gallery")
 }
 
 @Composable
-fun AppNavigation(currentUser: FirebaseUser?) {
+fun AppNavigation(
+    currentUser: FirebaseUser?,
+    imageDao: ImageDao
+) {
     val navController = rememberNavController()
 
     NavHost(
@@ -139,6 +157,20 @@ fun AppNavigation(currentUser: FirebaseUser?) {
                     navController.navigate(Screen.Login.route) {
                         popUpTo(Screen.RekomendasiTempat.route) { inclusive = true }
                     }
+                },
+                onGallerySelected = {
+                    navController.navigate(Screen.Gallery.route)
+                }
+            )
+        }
+        composable(Screen.Gallery.route) {
+            GalleryScreen(
+                imageDao = imageDao,
+                onImageSelected = { uri ->
+                    //Handle image selection (ini artinya apa?)
+                },
+                onBack = {
+                    navController.popBackStack()
                 }
             )
         }
@@ -388,7 +420,7 @@ val daftarTempatWisata = listOf(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun RekomendasiTempatScreen(onBackToLogin: () -> Unit) {
+fun RekomendasiTempatScreen(onBackToLogin: () -> Unit, onGallerySelected: () -> Unit) {
     val firestore = FirebaseFirestore.getInstance()
     val userEmail = FirebaseAuth.getInstance().currentUser?.email
     var daftarTempatWisata by remember { mutableStateOf<List<TempatWisata>>(emptyList()) }
@@ -456,6 +488,14 @@ fun RekomendasiTempatScreen(onBackToLogin: () -> Unit) {
                 )
             }
 
+            // Tambahkan tombol navigasi ke GalleryScreen
+            Button(
+                onClick = onGallerySelected,
+                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
+            ) {
+                Text("Lihat Galeri")
+            }
+
             if (isLoading) {
                 CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
             } else if (!errorMessage.isNullOrEmpty()) {
@@ -509,6 +549,7 @@ fun RekomendasiTempatScreen(onBackToLogin: () -> Unit) {
         }
     }
 }
+
 
 
 
@@ -866,6 +907,246 @@ fun TempatItem(tempat: TempatWisata) {
             )
         }
     }
+}
+
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
+@Composable
+fun GalleryScreen(
+    imageDao: ImageDao,
+    onImageSelected: (Uri) -> Unit,
+    onBack: () -> Unit
+) {
+    val images by imageDao.getAllImages().collectAsState(initial = emptyList())
+    var showAddImageDialog by remember { mutableStateOf(false) }
+    var selectedImageEntity by remember { mutableStateOf<ImageEntity?>(null) }
+    val context = LocalContext.current
+    var showDeleteConfirmation by remember { mutableStateOf<ImageEntity?>(null) }
+
+    LaunchedEffect(images) {
+        Log.d("GalleryScreen", "Total images: ${images.size}")
+        images.forEachIndexed() { index, image -> Log.d("GalleryScreen", "Image $index path: ${image.localPath}")
+            val file = File(image.localPath)
+            Log.d("GalleryScreen", "File exists: ${file.exists()}, is readable: ${file.canRead()}")
+        }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Gallery") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                }
+            )
+        },
+        floatingActionButton = {
+            FloatingActionButton(
+                onClick = { showAddImageDialog = true },
+                containerColor = MaterialTheme.colorScheme.primary
+                ) {
+                Icon(Icons.Filled.Add, contentDescription = "Add Image")
+            }
+        }
+    ) {
+        paddingValues ->
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(3),
+            modifier = Modifier.padding(paddingValues)
+        ) {
+            items(images) { image ->
+               Image(
+                   painter = rememberAsyncImagePainter(
+                       model = image.localPath
+                   ),
+                   contentDescription = null,
+                   modifier = Modifier
+                       .size(100.dp)
+                       .padding(4.dp)
+                       .clickable {
+                           selectedImageEntity = image
+                           onImageSelected(Uri.parse(image.localPath))
+                       },
+                   contentScale = ContentScale.Crop
+                   )
+            }
+        }
+
+        if (showAddImageDialog) {
+            AddImageDialog(
+                onDismiss = { showAddImageDialog = false },
+                onImageAdded = { uri ->
+                    try {
+                        val localPath = saveImageLocally(context, uri)
+                        if (localPath != null) {
+                            val newImage = ImageEntity(localPath = localPath)
+                            CoroutineScope(Dispatchers.IO).launch {
+                                imageDao.insert(newImage)
+                            }
+                            showAddImageDialog = false
+                        } else {
+                            Log.e("ImageSave", "Failed to save image locally")
+                        }
+                    } catch (e: Exception) {
+                        Log.e("ImageSave", "Failed to save image", e)
+                    }
+                }
+
+            )
+        }
+
+        selectedImageEntity?.let { imageEntity ->
+            ImageDetailDialog(
+                imageEntity = imageEntity,
+                onDismiss = { selectedImageEntity = null },
+                onDelete = { imageToDelete ->
+                    showDeleteConfirmation = imageToDelete
+                }
+            )
+        }
+
+        showDeleteConfirmation?.let { imageToDelete ->
+            AlertDialog(
+                onDismissRequest = { showDeleteConfirmation = null },
+                title = { Text("Delete Image") },
+                text = { Text("Are you sure you want to delete this image?") },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            CoroutineScope(Dispatchers.IO).launch {
+                                imageDao.delete(imageToDelete)
+                                val file = File(imageToDelete.localPath)
+                                if (file.exists()) {
+                                    file.delete()
+                                }
+                            }
+                            showDeleteConfirmation = null
+                        }
+                    ) {
+                        Text("Delete")
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = { showDeleteConfirmation = null}
+                    ) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+fun AddImageDialog(
+    onDismiss: () -> Unit,
+    onImageAdded: (Uri) -> Unit
+) {
+    var imageUri by remember { mutableStateOf<Uri?>(null) }
+    val context = LocalContext.current
+    val imagePickerLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.GetContent()
+    ) {
+        uri: Uri? -> imageUri = uri
+    }
+
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicturePreview()
+    ) { bitmap ->
+        bitmap?.let {
+            val uri = saveBitmapToUri(context, it)
+            imageUri = uri
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = { onDismiss },
+        title = { Text("Add New Image") },
+        text = {
+            Column {
+                imageUri?.let { uri ->
+                    Image(
+                        painter = rememberAsyncImagePainter(model = uri),
+                        contentDescription = "Selected Image",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(200.dp),
+                        contentScale = ContentScale.Crop
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Row {
+                    Button(
+                        onClick = {
+                            imagePickerLauncher.launch("image/*")
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Select from File")
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = { cameraLauncher.launch(null) },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Take Photo")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    imageUri?.let { uri ->
+                        onImageAdded(uri)
+                    }
+                }
+            ) {
+                Text("Add")
+            }
+        }
+    )
+}
+
+@Composable
+fun ImageDetailDialog(
+    imageEntity: ImageEntity,
+    onDismiss: () -> Unit,
+    onDelete: (ImageEntity) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        text = {
+            Image(
+                painter = rememberAsyncImagePainter(model = imageEntity.localPath),
+                contentDescription = "Detailed Image",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(1f),
+                contentScale = ContentScale.Crop
+            )
+        },
+        confirmButton = {
+            Row {
+                Button(onClick = { onDelete(imageEntity) }) {
+                    Text("Delete")
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Button(onClick = onDismiss) {
+                    Text("Close")
+                }
+            }
+        }
+    )
+}
+
+fun saveBitmapToUri(context: Context, bitmap: Bitmap): Uri {
+    val file = File(context.cacheDir, "${UUID.randomUUID()}.jpg")
+    val outputStream = FileOutputStream(file)
+    bitmap.compress(Bitmap.CompressFormat.JPEG, 100, outputStream)
+    outputStream.close()
+    return Uri.fromFile(file)
 }
 
 @Preview(showBackground = true)
